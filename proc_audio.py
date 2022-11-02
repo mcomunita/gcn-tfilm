@@ -12,34 +12,11 @@ def parse_args():
         description='''This script takes an input .wav file, loads it and processes it with a neural network model of a
                     device, i.e guitar amp/pedal, and saves the output as a .wav file''')
 
-    parser.add_argument('--input_file', type=str, default='data/test/ht1-input.wav', help='input file')
-    parser.add_argument('--output_file', type=str, default='output.wav', help='output file')
-    parser.add_argument('--model_file', type=str, default='results/ht1-ht11/model_best.json', help='model file')
+    parser.add_argument('--input_file', type=str, help='input file (e.g., "data/test/facebender-input.wav")')
+    parser.add_argument('--output_file', type=str, help='output file (e.g., "facebender-output.wav")')
+    parser.add_argument('--model_file', type=str, help='model file (e.g., "results/MODEL_FOLDER/model_best.json")')
     parser.add_argument('--chunk_length', type=int, default=16384, help='chunk length')
     return parser.parse_args()
-
-
-# def process_data(network,
-#                  input_data,
-#                  chunk):
-
-#     if not (input_data.shape[0] / chunk).is_integer():
-#         padding = int(chunk - (input_data.shape[0] % chunk))
-#         input_data = torch.nn.functional.pad(input_data,
-#                                              (0, 0, 0, 0, 0, padding),
-#                                              mode='constant',
-#                                              value=0)
-
-#     print("Process Data")
-#     print("input_data: ", input_data.shape)
-
-#     output = torch.empty_like(input_data)
-
-#     for l in range(int(output.size()[0] / chunk)):
-#         output[l * chunk: (l + 1) * chunk] = \
-#             network(input_data[l * chunk: (l + 1) * chunk])
-
-#     return output
 
 
 def proc_audio(args):

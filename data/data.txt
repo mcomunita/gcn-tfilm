@@ -1,1 +1,6 @@
-here goes the data
+here goes the data organized in 3 folders:
+- test
+- train
+- val
+each folder must contain the input and target files (wav - 16bit) (one file only - it will be split into samples during training)
+and they must be named DEVICE-input.wav and DEVICE-target.wav (e.g., la2a-input.wav and la2a-target.wav)
