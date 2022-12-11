@@ -427,7 +427,7 @@ for idx, tconf in enumerate(train_configs):
                       input_size=(dict_args["train_length"], dict_args["batch_size"], 1),
                       device=None)
 
-    # TRAIN
+    # ===== TRAIN ===== #
     start_time = time.time()
 
     model.save_state = True
@@ -439,36 +439,49 @@ for idx, tconf in enumerate(train_configs):
 
         # run 1 epoch of training
         if dict_args["model_type"] == "rnn":
-            epoch_loss = model.train_epoch(dataset.subsets['train'].data['input'][0],
-                                           dataset.subsets['train'].data['target'][0],
-                                           loss_functions,
-                                           optimiser,
-                                           dict_args["batch_size"],
-                                           up_fr=dict_args["up_fr"])
+            epoch_losses = model.train_epoch(dataset.subsets['train'].data['input'][0],
+                                             dataset.subsets['train'].data['target'][0],
+                                             loss_functions,
+                                             optimiser,
+                                             dict_args["batch_size"],
+                                             up_fr=dict_args["up_fr"])
         else:
-            epoch_loss = model.train_epoch(dataset.subsets['train'].data['input'][0],
-                                           dataset.subsets['train'].data['target'][0],
-                                           loss_functions,
-                                           optimiser,
-                                           dict_args["batch_size"])
+            epoch_losses = model.train_epoch(dataset.subsets['train'].data['input'][0],
+                                             dataset.subsets['train'].data['target'][0],
+                                             loss_functions,
+                                             optimiser,
+                                             dict_args["batch_size"])
+        epoch_loss = 0
+        for loss in epoch_losses:
+            epoch_loss += epoch_losses[loss]
+        print(f"epoch {epoch} | \ttrain loss: \t{epoch_loss:0.4f}", end="")
+        for loss in epoch_losses:
+            print(f" | \t{loss}: \t{epoch_losses[loss]:0.4f}", end="")
+        print()
 
-        print(f"epoch {epoch} | \ttrain loss: \t{epoch_loss:0.4f}")
-
-        # VALIDATION
+        # ===== VALIDATION ===== #
         if epoch % dict_args["validation_f"] == 0:
             val_ep_st_time = time.time()
-            val_input, val_target, val_output, val_loss = \
+            val_input, val_target, val_output, val_losses = \
                 model.process_data(dataset.subsets['val'].data['input'][0],
                                    dataset.subsets['val'].data['target'][0],
                                    loss_fcn=loss_functions,
                                    chunk=dict_args["val_chunk"])
 
-            print(f"\t\tval loss: \t{val_loss:0.4f}")
+            # val losses
+            val_loss = 0
+            for loss in val_losses:
+                val_loss += val_losses[loss]
+            print(f"\t\tval loss: \t{val_loss:0.4f}", end="")
+            for loss in val_losses:
+                print(f" | \t{loss}: \t{val_losses[loss]:0.4f}", end="")
+            print()
 
+            # update lr
             scheduler.step(val_loss)
 
             # save best model
-            if val_loss < train_track['best_val_loss']:
+            if val_loss < train_track['val_loss_best']:
                 patience_counter = 0
                 model.save_model('model_best', save_path)
                 scipy.io.wavfile.write(os.path.join(save_path, "best_val_out.wav"),
@@ -477,78 +490,123 @@ for idx, tconf in enumerate(train_configs):
             else:
                 patience_counter += 1
 
-            train_track.val_epoch_update(val_loss.item(), val_ep_st_time, time.time())
-            writer.add_scalar('Loss/val', train_track['validation_losses'][-1], epoch)
+            # log validation losses
+            for loss in val_losses:
+                val_losses[loss] = val_losses[loss].item()
 
-        # print('current learning rate: ' + str(optimiser.param_groups[0]['lr']))
+            train_track.val_epoch_update(val_loss=val_loss.item(),
+                                         val_losses=val_losses,
+                                         ep_st_time=val_ep_st_time,
+                                         ep_end_time=time.time())
 
-        train_track.train_epoch_update(epoch_loss.item(), ep_st_time, time.time(), init_time, epoch)
+            writer.add_scalar('Loss/Val (Tot)', val_loss, epoch)
+            for loss in val_losses:
+                writer.add_scalar(f"Loss/Val ({loss})", val_losses[loss], epoch)
 
-        # write loss to tensorboard
-        writer.add_scalar('Loss/train', train_track['training_losses'][-1], epoch)
+        # log training losses
+        for loss in epoch_losses:
+            epoch_losses[loss] = epoch_losses[loss].item()
+
+        train_track.train_epoch_update(epoch_loss=epoch_loss.item(),
+                                       epoch_losses=epoch_losses,
+                                       ep_st_time=ep_st_time,
+                                       ep_end_time=time.time(),
+                                       init_time=init_time,
+                                       current_ep=epoch)
+
+        writer.add_scalar('Loss/Train (Tot)', epoch_loss, epoch)
+        for loss in epoch_losses:
+            writer.add_scalar(f"Loss/Train ({loss})", epoch_losses[loss], epoch)
+
+        # log learning rate
         writer.add_scalar('LR/current', optimiser.param_groups[0]['lr'])
 
+        # save model
         model.save_model('model', save_path)
 
+        # log training stats to json
         utils.json_save(train_track, 'training_stats', save_path, indent=4)
 
+        # check early stopping
         if dict_args["validation_p"] and patience_counter > dict_args["validation_p"]:
             print('\nvalidation patience limit reached at epoch ' + str(epoch))
             break
 
-    # TEST (last model)
-    test_input, test_target, test_output, test_loss = \
+    # ===== TEST (last model) ===== #
+    test_input, test_target, test_output, test_losses = \
         model.process_data(dataset.subsets['test'].data['input'][0],
                            dataset.subsets['test'].data['target'][0],
                            loss_fcn=loss_functions,
                            chunk=dict_args["test_chunk"])
 
-    print(f"\t\ttest loss (last): \t{test_loss:0.4f}")
+    # test losses (last)
+    test_loss = 0
+    for loss in test_losses:
+        test_loss += test_losses[loss]
+    print(f"\ttest loss (last): \t{test_loss:0.4f}", end="")
+    for loss in test_losses:
+        print(f" | \t{loss}: \t{test_losses[loss]:0.4f}", end="")
+    print()
 
     lossESR = training.ESRLoss()  # include ESR loss
     test_loss_ESR = lossESR(test_output, test_target)
 
+    # save output audio
     scipy.io.wavfile.write(os.path.join(save_path, "test_out_final.wav"),
                            dataset.subsets['test'].fs,
                            test_output.cpu().numpy()[:, 0, 0])
 
-    writer.add_scalar('Loss/test_loss', test_loss.item(), 1)
-    writer.add_scalar('Loss/test_lossESR', test_loss_ESR.item(), 1)
+    # log test losses
+    for loss in test_losses:
+        test_losses[loss] = test_losses[loss].item()
 
     train_track['test_loss_final'] = test_loss.item()
+    train_track['test_losses_final'] = test_losses
     train_track['test_lossESR_final'] = test_loss_ESR.item()
 
-    # TEST (best validation model)
+    writer.add_scalar('Loss/Test/Last (Tot)', test_loss, 0)
+    for loss in test_losses:
+        writer.add_scalar(f"Loss/Test/Last ({loss})", test_losses[loss], 0)
+
+    # ===== TEST (best validation model) ===== #
     best_val_net = utils.json_load('model_best', save_path)
     model = utils.load_model(best_val_net)
 
-    # if dict_args["model_type"] == "rnn":
-    #     model = RNN.load_model(best_val_net)
-    # elif dict_args["model_type"] == "gcn":
-    #     model = GCN.load_model(best_val_net)
-    # elif dict_args["model_type"] == "gcntf":
-    #     model = GCNTF.load_model(best_val_net)
-
-    test_input, test_target, test_output, test_loss = \
+    test_input, test_target, test_output, test_losses = \
         model.process_data(dataset.subsets['test'].data['input'][0],
                            dataset.subsets['test'].data['target'][0],
                            loss_fcn=loss_functions,
                            chunk=dict_args["test_chunk"])
 
-    print(f"\t\ttest loss (best): \t{test_loss:0.4f}")
+    # test losses (best)
+    test_loss = 0
+    for loss in test_losses:
+        test_loss += test_losses[loss]
+    print(f"\ttest loss (best): \t{test_loss:0.4f}", end="")
+    for loss in test_losses:
+        print(f" | \t{loss}: \t{test_losses[loss]:0.4f}", end="")
+    print()
 
     test_loss_ESR = lossESR(test_output, test_target)
 
+    # save output audio
     scipy.io.wavfile.write(os.path.join(save_path, "test_out_bestv.wav"),
                            dataset.subsets['test'].fs,
                            test_output.cpu().numpy()[:, 0, 0])
 
-    writer.add_scalar('Loss/test_loss', test_loss.item(), 2)
-    writer.add_scalar('Loss/test_lossESR', test_loss_ESR.item(), 2)
+    # log test losses
+    for loss in test_losses:
+        test_losses[loss] = test_losses[loss].item()
 
     train_track['test_loss_best'] = test_loss.item()
+    train_track['test_losses_best'] = test_losses
     train_track['test_lossESR_best'] = test_loss_ESR.item()
 
+    writer.add_scalar('Loss/Test/Best (Tot)', test_loss, 0)
+    for loss in test_losses:
+        writer.add_scalar(f"Loss/Test/Best ({loss})", test_losses[loss], 0)
+
+    # log training stats to json
     utils.json_save(train_track, 'training_stats', save_path, indent=4)
 
     if cuda:
