@@ -359,11 +359,6 @@ for idx, tconf in enumerate(train_configs):
     save_path = os.path.join(dict_args["save_location"], specifier)
     utils.dir_check(save_path)
 
-    # save settings
-    utils.json_save(dict_args, "config", save_path, indent=4)
-    print(f"\n* Training config {idx+1}/{n_configs}")
-    print(dict_args)
-
     # set the seed
     # TODO
 
@@ -375,8 +370,17 @@ for idx, tconf in enumerate(train_configs):
     elif dict_args["model_type"] == "gcntf":
         model = GCNTF(**dict_args)
 
+    # compute rf
+    if dict_args["model_type"] in ["gcn", "gcntf"]:
+        dict_args["rf"] = model.compute_receptive_field()
+        
     model.save_state = False
     model.save_model("model", save_path)
+
+    # save settings
+    utils.json_save(dict_args, "config", save_path, indent=4)
+    print(f"\n* Training config {idx+1}/{n_configs}")
+    print(dict_args)
 
     # cuda
     if not torch.cuda.is_available() or dict_args["cuda"] == 0:
