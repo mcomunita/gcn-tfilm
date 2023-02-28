@@ -44,6 +44,10 @@ python proc_audio.py \
 --chunk_length 32768
 ```
 
+## Credits
+[https://github.com/Alec-Wright/Automated-GuitarAmpModelling](https://github.com/Alec-Wright/Automated-GuitarAmpModelling)
+
+[https://github.com/csteinmetz1/micro-tcn](https://github.com/csteinmetz1/micro-tcn)
 
 ## Citation
 If you use any of this code in your work, please consider citing us.
