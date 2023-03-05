@@ -2,106 +2,19 @@ import torch
 import math
 import argparse
 import src.utils as utils
-from contextlib import nullcontext
-
-
-def wrapperkwargs(func, kwargs):
-    return func(**kwargs)
-
-
-def wrapperargs(func, args):
-    return func(*args)
-
-
-# def load_model(model_data):
-#     model_types = {"GCN": GCN}
-
-#     model_meta = model_data.pop("model_data")
-
-#     if model_meta["model"] == "SimpleRNN" or model_meta["model"] == "GCN":
-#         network = wrapperkwargs(
-#             model_types[model_meta.pop("model")], model_meta)
-#         if "state_dict" in model_data:
-#             state_dict = network.state_dict()
-#             for each in model_data["state_dict"]:
-#                 state_dict[each] = torch.tensor(model_data["state_dict"][each])
-#             network.load_state_dict(state_dict)
-
-#     elif model_meta["model"] == "RecNet":
-#         model_meta["blocks"] = []
-#         network = wrapperkwargs(
-#             model_types[model_meta.pop("model")], model_meta)
-#         for i in range(len(model_data["blocks"])):
-#             network.add_layer(model_data["blocks"][str(i)])
-
-#         # Get the state dict from the newly created model and load the saved states, if states were saved
-#         if "state_dict" in model_data:
-#             state_dict = network.state_dict()
-#             for each in model_data["state_dict"]:
-#                 state_dict[each] = torch.tensor(model_data["state_dict"][each])
-#             network.load_state_dict(state_dict)
-
-#         if "training_info" in model_data.keys():
-#             network.training_info = model_data["training_info"]
-
-#     return network
-
-
-# This is a function for taking the old json config file format I used to use and converting it to the new format
-# def legacy_load(legacy_data):
-#     if legacy_data["unit_type"] == "GRU" or legacy_data["unit_type"] == "LSTM":
-#         model_data = {"model_data": {
-#             "model": "RecNet", "skip": 0}, "blocks": {}}
-#         model_data["blocks"]["0"] = {
-#             "block_type": legacy_data["unit_type"],
-#             "input_size": legacy_data["in_size"],
-#             "hidden_size": legacy_data["hidden_size"],
-#             "output_size": 1,
-#             "lin_bias": True,
-#         }
-#         if legacy_data["cur_epoch"]:
-#             training_info = {
-#                 "current_epoch": legacy_data["cur_epoch"],
-#                 "training_losses": legacy_data["tloss_list"],
-#                 "val_losses": legacy_data["vloss_list"],
-#                 "load_config": legacy_data["load_config"],
-#                 "low_pass": legacy_data["low_pass"],
-#                 "val_freq": legacy_data["val_freq"],
-#                 "device": legacy_data["pedal"],
-#                 "seg_length": legacy_data["seg_len"],
-#                 "learning_rate": legacy_data["learn_rate"],
-#                 "batch_size": legacy_data["batch_size"],
-#                 "loss_func": legacy_data["loss_fcn"],
-#                 "update_freq": legacy_data["up_fr"],
-#                 "init_length": legacy_data["init_len"],
-#                 "pre_filter": legacy_data["pre_filt"],
-#             }
-#             model_data["training_info"] = training_info
-
-#         if "state_dict" in legacy_data:
-#             state_dict = legacy_data["state_dict"]
-#             state_dict = dict(state_dict)
-#             new_state_dict = {}
-#             for each in state_dict:
-#                 new_name = each[0:7] + "block_1." + each[9:]
-#                 new_state_dict[new_name] = state_dict[each]
-#             model_data["state_dict"] = new_state_dict
-#         return model_data
-#     else:
-#         print("format not recognised")
 
 
 """
-Temporal FiLM layer
+Temporal FiLM layer - Conditional
 """
-
-
 class TFiLM(torch.nn.Module):
     def __init__(self,
                  nchannels,
-                 block_size=128):
+                 nparams,
+                 block_size):
         super(TFiLM, self).__init__()
         self.nchannels = nchannels
+        self.nparams = nparams
         self.block_size = block_size
         self.num_layers = 1
         self.hidden_state = None  # (hidden_state, cell_state)
@@ -114,20 +27,31 @@ class TFiLM(torch.nn.Module):
                                           return_indices=False,
                                           ceil_mode=False)
 
-        self.lstm = torch.nn.LSTM(input_size=nchannels,
+        self.lstm = torch.nn.LSTM(input_size=nchannels+nparams,
                                   hidden_size=nchannels,
                                   num_layers=self.num_layers,
                                   batch_first=False,
                                   bidirectional=False)
 
-    def forward(self, x):
-        # print("TFiLM: ", x.shape)
-        # x = [batch, channels, length]
+    def forward(self, x, p=None):
+        # x = [batch, nchannels, length]
+        # p = [batch, nparams]
+        x_in_shape = x.shape
+
+        # pad input if it's not multiple of tfilm block size
+        if (x_in_shape[2] % self.block_size) != 0:
+            padding = torch.zeros(x_in_shape[0], x_in_shape[1], self.block_size - (x_in_shape[2] % self.block_size))
+            x = torch.cat((x, padding), dim=-1)
+
         x_shape = x.shape
         nsteps = int(x_shape[-1] / self.block_size)
 
-        # downsample
+        # downsample signal [batch, nchannels, nsteps]
         x_down = self.maxpool(x)
+
+        if self.nparams > 0 and p != None:
+            p_up = p.unsqueeze(-1).repeat(1, 1, nsteps) # upsample params [batch, nparams, nsteps]
+            x_down = torch.cat((x_down, p_up), dim=1) # concat along channel dim [batch, nchannels+nparams, nsteps]
 
         # shape for LSTM (length, batch, channels)
         x_down = x_down.permute(2, 0, 1)
@@ -153,38 +77,42 @@ class TFiLM(torch.nn.Module):
         # multiply
         x_out = x_norm * x_in
 
-        # return to original shape
+        # return to original (padded) shape
         x_out = torch.reshape(x_out, shape=(x_shape))
+
+        # crop to original (input) shape
+        x_out = x_out[..., :x_in_shape[2]]
 
         return x_out
 
-    def detach_state(self):
-        if self.hidden_state.__class__ == tuple:
-            self.hidden_state = tuple([h.clone().detach() for h in self.hidden_state])
-        else:
-            self.hidden_state = self.hidden_state.clone().detach()
+    # def detach_state(self):
+    #     if self.hidden_state.__class__ == tuple:
+    #         self.hidden_state = tuple([h.clone().detach() for h in self.hidden_state])
+    #     else:
+    #         self.hidden_state = self.hidden_state.clone().detach()
 
     def reset_state(self):
+        # print("Reset Hidden State")
         self.hidden_state = None
 
 
 """ 
 Gated convolutional layer, zero pads and then applies a causal convolution to the input
 """
-
-
 class GatedConv1d(torch.nn.Module):
     def __init__(self,
                  in_ch,
                  out_ch,
                  dilation,
                  kernel_size,
+                 nparams,
                  tfilm_block_size):
         super(GatedConv1d, self).__init__()
         self.in_ch = in_ch
         self.out_ch = out_ch
         self.dilation = dilation
         self.kernal_size = kernel_size
+        self.nparams = nparams
         self.tfilm_block_size = tfilm_block_size
 
         # Layers: Conv1D -> Activations -> TFiLM -> Mix + Residual
@@ -197,6 +125,7 @@ class GatedConv1d(torch.nn.Module):
                                     dilation=dilation)
 
         self.tfilm = TFiLM(nchannels=out_ch,
+                           nparams=nparams,
                            block_size=tfilm_block_size)
 
         self.mix = torch.nn.Conv1d(in_channels=out_ch,
@@ -205,7 +134,7 @@ class GatedConv1d(torch.nn.Module):
                                    stride=1,
                                    padding=0)
 
-    def forward(self, x):
+    def forward(self, x, p=None):
         # print("GatedConv1d: ", x.shape)
         residual = x
 
@@ -224,7 +153,7 @@ class GatedConv1d(torch.nn.Module):
                       dim=2)
 
         # modulation
-        z = self.tfilm(z)
+        z = self.tfilm(z, p)
 
         x = self.mix(z) + residual
 
@@ -234,10 +163,8 @@ class GatedConv1d(torch.nn.Module):
 """ 
 Gated convolutional neural net block, applies successive gated convolutional layers to the input, a total of 'layers'
 layers are applied, with the filter size 'kernel_size' and the dilation increasing by a factor of 'dilation_growth' for
- each successive layer.
+each successive layer.
 """
-
-
 class GCNBlock(torch.nn.Module):
     def __init__(self,
                  in_ch,
@@ -245,6 +172,7 @@ class GCNBlock(torch.nn.Module):
                  nlayers,
                  kernel_size,
                  dilation_growth,
+                 nparams,
                  tfilm_block_size):
         super(GCNBlock, self).__init__()
         self.in_ch = in_ch
@@ -252,6 +180,7 @@ class GCNBlock(torch.nn.Module):
         self.nlayers = nlayers
         self.kernel_size = kernel_size
         self.dilation_growth = dilation_growth
+        self.nparams = nparams
         self.tfilm_block_size = tfilm_block_size
 
         dilations = [dilation_growth ** l for l in range(nlayers)]
@@ -263,10 +192,11 @@ class GCNBlock(torch.nn.Module):
                                            out_ch=out_ch,
                                            dilation=d,
                                            kernel_size=kernel_size,
+                                           nparams=nparams,
                                            tfilm_block_size=tfilm_block_size))
             in_ch = out_ch
 
-    def forward(self, x):
+    def forward(self, x, p=None):
         # print("GCNBlock: ", x.shape)
         # [batch, channels, length]
         z = torch.empty([x.shape[0],
@@ -274,7 +204,7 @@ class GCNBlock(torch.nn.Module):
                          x.shape[2]])
 
         for n, layer in enumerate(self.layers):
-            x, zn = layer(x)
+            x, zn = layer(x, p)
             z[:, n * self.out_ch: (n + 1) * self.out_ch, :] = zn
 
         return x, z
@@ -292,10 +222,9 @@ increasing by a factor of 'dilation_growth'. 'layers' determines how many convol
 The output of the model is creating by the linear mixer, which sums weighted outputs from each of the layers in the 
 model
 """
-
-
 class GCNTF(torch.nn.Module):
     def __init__(self,
+                 nparams=0,
                  nblocks=2,
                  nlayers=9,
                  nchannels=8,
@@ -304,6 +233,7 @@ class GCNTF(torch.nn.Module):
                  tfilm_block_size=128,
                  **kwargs):
         super(GCNTF, self).__init__()
+        self.nparams = nparams
         self.nblocks = nblocks
         self.nlayers = nlayers
         self.nchannels = nchannels
@@ -318,6 +248,7 @@ class GCNTF(torch.nn.Module):
                                         nlayers=nlayers,
                                         kernel_size=kernel_size,
                                         dilation_growth=dilation_growth,
+                                        nparams=nparams,
                                         tfilm_block_size=tfilm_block_size))
 
         # output mixing layer
@@ -328,27 +259,28 @@ class GCNTF(torch.nn.Module):
                             stride=1,
                             padding=0))
 
-    def forward(self, x):
+    def forward(self, x, p=None):
         # print("GCN: ", x.shape)
         # x.shape = [length, batch, channels]
-        x = x.permute(1, 2, 0)  # change to [batch, channels, length]
+        # x = x.permute(1, 2, 0)  # change to [batch, channels, length]
         z = torch.empty([x.shape[0], self.blocks[-1].in_channels, x.shape[2]])
 
         for n, block in enumerate(self.blocks[:-1]):
-            x, zn = block(x)
+            x, zn = block(x, p)
             z[:,
               n * self.nchannels * self.nlayers:
               (n + 1) * self.nchannels * self.nlayers,
               :] = zn
 
         # back to [length, batch, channels]
-        return self.blocks[-1](z).permute(2, 0, 1)
+        # return self.blocks[-1](z).permute(2, 0, 1)
+        return self.blocks[-1](z)
 
-    def detach_states(self):
-        # print("DETACH STATES")
-        for layer in self.modules():
-            if isinstance(layer, TFiLM):
-                layer.detach_state()
+    # def detach_states(self):
+    #     # print("DETACH STATES")
+    #     for layer in self.modules():
+    #         if isinstance(layer, TFiLM):
+    #             layer.detach_state()
 
     # reset state for all TFiLM layers
     def reset_states(self):
