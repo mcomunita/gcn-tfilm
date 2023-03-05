@@ -231,6 +231,7 @@ class GCNTF(torch.nn.Module):
                  kernel_size=3,
                  dilation_growth=2,
                  tfilm_block_size=128,
+                 device="cpu",
                  **kwargs):
         super(GCNTF, self).__init__()
         self.nparams = nparams
@@ -240,6 +241,7 @@ class GCNTF(torch.nn.Module):
         self.kernel_size = kernel_size
         self.dilation_growth = dilation_growth
         self.tfilm_block_size = tfilm_block_size
+        self.device = device
 
         self.blocks = torch.nn.ModuleList()
         for b in range(nblocks):
@@ -289,51 +291,43 @@ class GCNTF(torch.nn.Module):
             if isinstance(layer, TFiLM):
                 layer.reset_state()
 
+
     # train_epoch runs one epoch of training
     def train_epoch(self,
-                    input_data,
-                    target_data,
+                    dataloader,
                     loss_fcn,
-                    optim,
-                    batch_size):
-        # shuffle the segments at the start of the epoch
-        shuffle = torch.randperm(input_data.shape[1])
-
-        # iterate over the batches
+                    optimiser):
+        # print("TRAIN EPOCH")
         ep_losses = None
 
-        for batch_i in range(math.ceil(shuffle.shape[0] / batch_size)):
+        for batch_idx, batch in enumerate(dataloader):
+            # print("TRAIN BATCH")
             # reset states before starting new batch
             self.reset_states()
 
             # zero all gradients
             self.zero_grad()
 
-            # load batch
-            input_batch = input_data[:,
-                                     shuffle[batch_i * batch_size:
-                                             (batch_i + 1) * batch_size],
-                                     :]
-            target_batch = target_data[:,
-                                       shuffle[batch_i * batch_size:
-                                               (batch_i + 1) * batch_size],
-                                       :]
+            input, target, params = batch
+            input = input.to(self.device)
+            target = target.to(self.device)
+            params = params.to(self.device)
 
             # process batch
-            output = self(input_batch)
+            pred = self(input, params)
+            pred = pred.to(self.device)
 
             # loss and backprop
-            batch_losses = loss_fcn(output, target_batch)
+            batch_losses = loss_fcn(pred, target)
 
             tot_batch_loss = 0
             for loss in batch_losses:
                 tot_batch_loss += batch_losses[loss]
-            
+
             tot_batch_loss.backward()
-            optim.step()
+            optimiser.step()
 
             # add batch losses to epoch losses
-            # ep_loss += loss
             for loss in batch_losses:
                 if ep_losses == None:
                     ep_losses = batch_losses
@@ -342,62 +336,123 @@ class GCNTF(torch.nn.Module):
 
         # mean epoch losses
         for loss in ep_losses:
-            ep_losses[loss] /= (batch_i + 1)
+            ep_losses[loss] /= (batch_idx + 1)
 
         return ep_losses
+    
+
+    def val_epoch(self,
+                  dataloader,
+                  loss_fcn):
+        val_losses = None
+
+        # evaluation mode
+        self.eval()
+        with torch.no_grad():
+            for batch_idx, batch in enumerate(dataloader):
+                # reset states before starting new batch
+                self.reset_states()
+
+                input, target, params = batch
+                input = input.to(self.device)
+                target = target.to(self.device)
+                params = params.to(self.device)
+
+                # process batch
+                pred = self(input, params)
+                pred = pred.to(self.device)
+
+                # loss
+                batch_losses = loss_fcn(pred, target)
+
+                tot_batch_loss = 0
+                for loss in batch_losses:
+                    tot_batch_loss += batch_losses[loss]
+
+                # add batch losses to epoch losses
+                for loss in batch_losses:
+                    if val_losses == None:
+                        val_losses = batch_losses
+                    else:
+                        val_losses[loss] += batch_losses[loss]
+
+        # mean val losses
+        for loss in val_losses:
+            val_losses[loss] /= (batch_idx + 1)
+        
+        # back to training mode
+        self.train()
+        return val_losses
+
+
+    def test_epoch(self,
+                  dataloader,
+                  loss_fcn):
+        test_losses = None
+
+        # evaluation mode
+        self.eval()
+        with torch.no_grad():
+            for batch_idx, batch in enumerate(dataloader):
+                # reset states before starting new batch
+                self.reset_states()
+
+                input, target, params = batch
+                input = input.to(self.device)
+                target = target.to(self.device)
+                params = params.to(self.device)
+
+                # process batch
+                pred = self(input, params)
+                pred = pred.to(self.device)
+
+                # loss
+                batch_losses = loss_fcn(pred, target)
+
+                tot_batch_loss = 0
+                for loss in batch_losses:
+                    tot_batch_loss += batch_losses[loss]
+
+                # add batch losses to epoch losses
+                for loss in batch_losses:
+                    if test_losses == None:
+                        test_losses = batch_losses
+                    else:
+                        test_losses[loss] += batch_losses[loss]
+
+        # mean val losses
+        for loss in test_losses:
+            test_losses[loss] /= (batch_idx + 1)
+        
+        # back to training mode
+        self.train()
+        return test_losses
+
 
     def process_data(self,
-                     input_data,
-                     target_data=None,
-                     chunk=16384,
-                     loss_fcn=None,
-                     grad=False):
-
-        rf = self.compute_receptive_field()
-        # round to next block size
-        rf = rf + (self.tfilm_block_size - rf % self.tfilm_block_size)
-
-        if not (input_data.shape[0] / chunk).is_integer():
-            # round to next chunk size
-            padding = chunk - (input_data.shape[0] % chunk)
-            input_data = torch.nn.functional.pad(input_data,
-                                                 (0, 0, 0, 0, 0, padding),
-                                                 mode='constant',
-                                                 value=0)
-            if target_data != None:
-                target_data = torch.nn.functional.pad(target_data,
-                                                      (0, 0, 0, 0, 0, padding),
-                                                      mode='constant',
-                                                      value=0)
-
+                     input,
+                     params):
+        
+        input = input.to(self.device)
+        params = params.to(self.device)
+        
+        # evaluation mode
+        self.eval()
         with torch.no_grad():
             # reset states before processing
             self.reset_states()
-            
-            # process input
-            output_data = torch.empty_like(input_data)
 
-            for l in range(int(output_data.size()[0] / chunk)):
-                input_chunk = input_data[l * chunk: (l + 1) * chunk]
-                if l == 0:  # first chunk
-                    padding = torch.zeros([rf, input_chunk.shape[1], input_chunk.shape[2]])
-                else:
-                    padding = input_data[(l * chunk) - rf: l * chunk]
-                input_chunk = torch.cat([padding, input_chunk])
-                output_chunk = self(input_chunk)
-                output_data[l * chunk: (l + 1) * chunk] = \
-                    output_chunk[rf:, :, :]
-
-            if loss_fcn != None and target_data != None:
-                losses = loss_fcn(output_data, target_data)
-                return input_data, target_data, output_data, losses
+            out = self(x=input, p=params)
+        
+        # back to training mode
+        self.train()
 
         # reset states before other computations
         self.reset_states()
 
-        return input_data, target_data, output_data
+        return out
 
-    # this functions saves the model and all its paraemters to a json file, so it can be loaded by a JUCE plugin
+
     def save_model(self,
                    file_name,
                    direc=""):
@@ -405,6 +460,7 @@ class GCNTF(torch.nn.Module):
             utils.dir_check(direc)
 
         model_data = {"model_data": {"model_type": "gcntf",
+                                     "nparams": self.nparams,
                                      "nblocks": self.nblocks,
                                      "nlayers": self.nlayers,
                                      "nchannels": self.nchannels,
@@ -420,6 +476,7 @@ class GCNTF(torch.nn.Module):
 
         utils.json_save(model_data, file_name, direc)
 
+
     def compute_receptive_field(self):
         """ Compute the receptive field in samples."""
         rf = self.kernel_size
@@ -428,11 +485,13 @@ class GCNTF(torch.nn.Module):
             rf = rf + ((self.kernel_size-1) * dilation)
         return rf
 
+
     # add any model hyperparameters here
     @staticmethod
     def add_model_specific_args(parent_parser):
         parser = argparse.ArgumentParser(parents=[parent_parser], add_help=False)
         # --- model related ---
+        parser.add_argument('--nparams', type=int, default=0)
         parser.add_argument('--nblocks', type=int, default=2)
         parser.add_argument('--nlayers', type=int, default=9)
         parser.add_argument('--nchannels', type=int, default=16)

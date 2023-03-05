@@ -93,9 +93,9 @@ class LossWrapper(nn.Module):
             # auraloss needs: batch x 1 x length
             loss_fcn = self.loss_functions[i]
             loss_factor = self.loss_factors[i]
-            if isinstance(loss_fcn, auraloss.freq.STFTLoss) or isinstance(loss_fcn, auraloss.freq.MultiResolutionSTFTLoss):
-                output = torch.permute(output, (1, 2, 0))
-                target = torch.permute(target, (1, 2, 0))
+            # if isinstance(loss_fcn, auraloss.freq.STFTLoss) or isinstance(loss_fcn, auraloss.freq.MultiResolutionSTFTLoss):
+            #     output = torch.permute(output, (1, 2, 0))
+            #     target = torch.permute(target, (1, 2, 0))
             all_losses[loss] = torch.mul(loss_fcn(output, target), loss_factor)
         return all_losses
 
