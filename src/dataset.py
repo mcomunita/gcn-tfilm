@@ -16,7 +16,7 @@ def rand(low=0, high=1):
 def randint(low=0, high=1):
     return torch.randint(low, high + 1, (1,)).numpy()[0]
 
-class FuzzChunksDataset(torch.utils.data.Dataset):
+class FuzzDataset(torch.utils.data.Dataset):
     def __init__(self,
                  root_dir,
                  sample_length=48000,
@@ -32,8 +32,6 @@ class FuzzChunksDataset(torch.utils.data.Dataset):
 
         self.n_inputs = len(self.input_files)
         self.n_targets = len(self.target_files)
-
-        assert self.n_inputs == self.n_targets
 
         # get audio samples and params
         self.samples = [] 
